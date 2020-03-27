@@ -1,10 +1,12 @@
 # erofs-huawei-extension
 
+Mount the Huawei (EMUI 9.1 or later) erofs filesystem on the Linux host
+
 ## Apply patch
 
 ### Gentoo
 
-```sh
+```
 # git clone https://github.com/ud3v0id/erofs-huawei-extension ~/
 # mkdir -p /etc/portage/patches/sys-kernel/
 # cp -r ~/erofs-huawei-extension/gentoo-sources-* /etc/portage/patches/sys-kernel/
@@ -13,10 +15,10 @@
 
 ### Other Linux
 
-```sh
+```
 # git clone https://github.com/ud3v0id/erofs-huawei-extension ~/
 # cd /usr/src/linux
-# git apply ~/erofs-huawei-extension/gentoo-sources-{kernel version}/*
+# git apply ~/erofs-huawei-extension/gentoo-sources-{kernel version}/*.patch
 ```
 
 ## Activate kernel options
