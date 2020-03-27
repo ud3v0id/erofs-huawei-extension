@@ -1,0 +1,109 @@
+diff --git a/drivers/staging/erofs/Kconfig b/drivers/staging/erofs/Kconfig
+index 663b755bf..0d1690537 100644
+--- a/drivers/staging/erofs/Kconfig
++++ b/drivers/staging/erofs/Kconfig
+@@ -139,3 +139,10 @@ config EROFS_FS_ZIP_CACHE_BIPOLAR
+ 
+ endchoice
+ 
++config EROFS_FS_HUAWEI_EXTENSION
++	bool "EROFS HUAWEI Extension"
++	depends on EROFS_FS && EROFS_FS_ZIP
++	help
++	  Targeted optimizations for HUAWEI Mobile phone.
++
++	  If unsure, say N.
+diff --git a/drivers/staging/erofs/erofs_fs.h b/drivers/staging/erofs/erofs_fs.h
+index 7677da889..01be94263 100644
+--- a/drivers/staging/erofs/erofs_fs.h
++++ b/drivers/staging/erofs/erofs_fs.h
+@@ -208,6 +208,12 @@ struct erofs_extent_header {
+  *        di_u.delta[0] = distance to its corresponding head cluster
+  *        di_u.delta[1] = distance to its corresponding tail cluster
+  *                (di_advise could be 0, 1 or 2)
++#ifdef CONFIG_EROFS_FS_HUAWEI_EXTENSION
++ *     or di_advise[3:0]       = 3  (for 4K, max 1M / 4K = 256)
++ *        {di_advise[7:4], di_pageofs[15:12]} =
++ *                               distance to its corresponding head cluster
++ *        di_advise[15:8]      = distance to its corresponding tail cluster
++#endif
+  */
+ #define Z_EROFS_VLE_DI_CLUSTER_TYPE_BITS        2
+ #define Z_EROFS_VLE_DI_CLUSTER_TYPE_BIT         0
+diff --git a/drivers/staging/erofs/unzip_vle.c b/drivers/staging/erofs/unzip_vle.c
+index 0f1558c67..519d00d57 100644
+--- a/drivers/staging/erofs/unzip_vle.c
++++ b/drivers/staging/erofs/unzip_vle.c
+@@ -1452,13 +1452,23 @@ enum {
+ 	Z_EROFS_VLE_CLUSTER_TYPE_PLAIN,
+ 	Z_EROFS_VLE_CLUSTER_TYPE_HEAD,
+ 	Z_EROFS_VLE_CLUSTER_TYPE_NONHEAD,
++#ifdef CONFIG_EROFS_FS_HUAWEI_EXTENSION
++	Z_EROFS_VLE_CLUSTER_TYPE_HUAWEI_COMPAT,
++#else
+ 	Z_EROFS_VLE_CLUSTER_TYPE_RESERVED,
++#endif
+ 	Z_EROFS_VLE_CLUSTER_TYPE_MAX
+ };
+ 
+ #define vle_cluster_type(di)	\
+ 	__vle_cluster_type((di)->di_advise)
+ 
++#ifdef CONFIG_EROFS_FS_HUAWEI_EXTENSION
++#define vle_huawei_compat_previous_clusters(clustersize, di) (\
++        (le16_to_cpu((di)->di_clusterofs) / clustersize) | \
++(__vle_cluster_advise((di)->di_advise, 4, 4) << 4))
++#endif
++
+ static inline unsigned
+ vle_compressed_index_clusterofs(unsigned clustersize,
+ 	struct z_erofs_vle_decompressed_index *di)
+@@ -1470,6 +1480,13 @@ vle_compressed_index_clusterofs(unsigned clustersize,
+ 	switch (vle_cluster_type(di)) {
+ 	case Z_EROFS_VLE_CLUSTER_TYPE_NONHEAD:
+ 		break;
++#ifdef CONFIG_EROFS_FS_HUAWEI_EXTENSION
++	case Z_EROFS_VLE_CLUSTER_TYPE_HUAWEI_COMPAT:
++		if (vle_huawei_compat_previous_clusters(clustersize, di)) {
++			break;
++		}
++		/* fallthrough */
++#endif
+ 	case Z_EROFS_VLE_CLUSTER_TYPE_PLAIN:
+ 	case Z_EROFS_VLE_CLUSTER_TYPE_HEAD:
+ 		return di->di_clusterofs;
+@@ -1552,6 +1570,11 @@ static erofs_off_t vle_get_logical_extent_head(
+ 		break;
+ 	case Z_EROFS_VLE_CLUSTER_TYPE_PLAIN:
+ 		*flags ^= EROFS_MAP_ZIPPED;
++#ifdef CONFIG_EROFS_FS_HUAWEI_EXTENSION
++	case Z_EROFS_VLE_CLUSTER_TYPE_HUAWEI_COMPAT:
++		lcn -= vle_huawei_compat_previous_clusters(clustersize, di);
++		/* fallthrough */
++#endif
+ 	case Z_EROFS_VLE_CLUSTER_TYPE_HEAD:
+ 		/* clustersize should be a power of two */
+ 		ofs = ((unsigned long long)lcn << clusterbits) +
+@@ -1640,6 +1663,14 @@ int z_erofs_map_blocks_iter(struct inode *inode,
+ 		if (ofs_rem >= logical_cluster_ofs)
+ 			map->m_flags ^= EROFS_MAP_ZIPPED;
+ 		/* fallthrough */
++#ifdef CONFIG_EROFS_FS_HUAWEI_EXTENSION
++	case Z_EROFS_VLE_CLUSTER_TYPE_HUAWEI_COMPAT:
++		if (vle_huawei_compat_previous_clusters(clustersize, di)) {
++			end = (lcn-- + 1ULL) * clustersize;
++			goto nonhead;
++		}
++		/* fallthrough */
++#endif
+ 	case Z_EROFS_VLE_CLUSTER_TYPE_HEAD:
+ 		if (ofs_rem == logical_cluster_ofs) {
+ 			pcn = le32_to_cpu(di->di_u.blkaddr);
+@@ -1662,6 +1693,7 @@ int z_erofs_map_blocks_iter(struct inode *inode,
+ 		end = (lcn-- * clustersize) | logical_cluster_ofs;
+ 		/* fallthrough */
+ 	case Z_EROFS_VLE_CLUSTER_TYPE_NONHEAD:
++nonhead:
+ 		/* get the correspoinding first chunk */
+ 		ofs = vle_get_logical_extent_head(inode, mpage_ret,
+ 			&kaddr, lcn, &pcn, &map->m_flags);
